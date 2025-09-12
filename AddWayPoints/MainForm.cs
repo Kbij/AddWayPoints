@@ -38,41 +38,51 @@ namespace AddWayPoints
                     mGpxDocument.Load(dlgOpenFile.FileName);
                     mNsMgr = new XmlNamespaceManager(mGpxDocument.NameTable);
                     mNsMgr.AddNamespace("gpx", "http://www.topografix.com/GPX/1/1");
-                    XmlNodeList segmentNodes = mGpxDocument.SelectNodes("//gpx:trkseg", mNsMgr);
                     double totalDistance = 0;
+                    double prevLat = -1;
+                    double prevLon = -1;
 
-                    foreach (XmlNode segment in segmentNodes)
+                    foreach (XmlNode track in mGpxDocument.SelectNodes("//gpx:trk", mNsMgr))
                     {
-                        var nameNode =  segment.SelectSingleNode("./gpx:name", mNsMgr);
+                        var nameNode = track.SelectSingleNode("gpx:name", mNsMgr);
                         if (nameNode != null)
                         {
-                            AddLog(segment.Value);
+                            AddLog($"Track: {nameNode.InnerText}");
                         }
-                        double prevLat = -1;
-                        double prevLon = -1;
-                        foreach(XmlNode pt in segment.SelectNodes("//gpx:trkpt", mNsMgr))
+
+                        XmlNodeList segmentNodes = track.SelectNodes("gpx:trkseg", mNsMgr);
+                        double trackDistance = 0;
+
+                        foreach (XmlNode segment in segmentNodes)
                         {
-                            double currentLat = Convert.ToDouble(pt.Attributes["lat"].Value);
-                            double currentLon = Convert.ToDouble(pt.Attributes["lon"].Value);
-
-                            if (prevLat != -1 && prevLon != -1)
+                            foreach (XmlNode pt in segment.SelectNodes("gpx:trkpt", mNsMgr))
                             {
-                                var prevCoord = new GeoCoordinate(prevLat, prevLon);
-                                var currentCoord = new GeoCoordinate(currentLat, currentLon);
+                                double currentLat = Convert.ToDouble(pt.Attributes["lat"].Value);
+                                double currentLon = Convert.ToDouble(pt.Attributes["lon"].Value);
 
-                                totalDistance += currentCoord.GetDistanceTo(prevCoord);
+                                if (prevLat != -1 && prevLon != -1)
+                                {
+                                    var prevCoord = new GeoCoordinate(prevLat, prevLon);
+                                    var currentCoord = new GeoCoordinate(currentLat, currentLon);
 
-                                var routePoint = new RoutePoint();
-                                routePoint.Coordinate = currentCoord;
-                                routePoint.RouteDistance = (int)Math.Truncate(totalDistance / 1000);
-                                mRoute.Add(routePoint);
+                                    trackDistance += currentCoord.GetDistanceTo(prevCoord);
+
+                                    var routePoint = new RoutePoint();
+                                    routePoint.Coordinate = currentCoord;
+                                    routePoint.RouteDistance = (int)Math.Truncate(trackDistance / 1000);
+                                    mRoute.Add(routePoint);
+                                }
+                                prevLat = currentLat;
+                                prevLon = currentLon;
                             }
-                            prevLat = currentLat;
-                            prevLon = currentLon;
                         }
+
+                        AddLog(string.Format("Distance for current track: {0:N1} km", trackDistance / 1000));
+                        AddLog("===========");
+                        totalDistance += trackDistance;
                     }
 
-                    AddLog(string.Format("Distance for current track: {0:N1} km", totalDistance / 1000));
+                    AddLog(string.Format("Total distance: {0:N1} km", totalDistance / 1000));
                     btnWriteWaypoints.Enabled = true;
                 }
                 catch (Exception ex)
@@ -100,30 +110,25 @@ namespace AddWayPoints
                     wp.ParentNode.RemoveChild(wp);
                 }
             }
+            double offSet = Convert.ToDouble(edtOffset.Text);
+            double wantedWpdistance = Convert.ToDouble(edtDistance.Text);
+            int wpIndex = (int)Math.Truncate(offSet / wantedWpdistance);
+            double prevLat = -1;
+            double prevLon = -1;
+            double totalDistance = 0;
 
-            XmlNode startNode = mGpxDocument.SelectSingleNode("//gpx:metadata", mNsMgr);
-            if (startNode == null)
+            XmlNode startWpNode = mGpxDocument.SelectSingleNode("//gpx:metadata", mNsMgr);
+            if (startWpNode == null)
             {
-                startNode = mGpxDocument.SelectSingleNode("//gpx:gpx", mNsMgr);
+                startWpNode = mGpxDocument.SelectSingleNode("//gpx:gpx", mNsMgr);
             }
 
-            if (startNode != null)
+            foreach (XmlNode track in mGpxDocument.SelectNodes("//gpx:trk", mNsMgr))
             {
-                XmlNodeList segmentNodes = mGpxDocument.SelectNodes("//gpx:trkseg", mNsMgr);
-                double totalDistance = 0;
-                double offSet = Convert.ToDouble(edtOffset.Text);
-                double wantedWpdistance = Convert.ToDouble(edtDistance.Text);
-                int wpIndex = (int) Math.Truncate(offSet / wantedWpdistance);
+                XmlNodeList segmentNodes = track.SelectNodes("gpx:trkseg", mNsMgr);
                 foreach (XmlNode segment in segmentNodes)
                 {
-                    //var nameNode = segment.SelectSingleNode("./gpx:name", mNsMgr);
-                    //if (nameNode != null)
-                    //{
-                    //    AddLog(segment.Value);
-                    //}
-                    double prevLat = -1;
-                    double prevLon = -1;
-                    foreach (XmlNode pt in segment.SelectNodes("//gpx:trkpt", mNsMgr))
+                    foreach (XmlNode pt in segment.SelectNodes("gpx:trkpt", mNsMgr))
                     {
                         double currentLat = Convert.ToDouble(pt.Attributes["lat"].Value);
                         double currentLon = Convert.ToDouble(pt.Attributes["lon"].Value);
@@ -132,12 +137,15 @@ namespace AddWayPoints
                         {
                             var prevCoord = new GeoCoordinate(prevLat, prevLon);
                             var currentCoord = new GeoCoordinate(currentLat, currentLon);
-                            var distance = currentCoord.GetDistanceTo(prevCoord);
-                            
-                            totalDistance += distance;
 
-    
+                            totalDistance += currentCoord.GetDistanceTo(prevCoord);
+
+                            var routePoint = new RoutePoint();
+                            routePoint.Coordinate = currentCoord;
+                            routePoint.RouteDistance = (int)Math.Truncate(totalDistance / 1000);
+                            mRoute.Add(routePoint);
                         }
+
                         int currentIndex = (int)Math.Truncate((offSet + (totalDistance / 1000)) / wantedWpdistance);
                         if (currentIndex > wpIndex)
                         {
@@ -155,33 +163,30 @@ namespace AddWayPoints
                             nameNode.InnerText = string.Format("{0}", wpIndex * wantedWpdistance);
                             wpNode.AppendChild(nameNode);
 
-                            startNode.ParentNode.InsertAfter(wpNode, startNode);
+                            startWpNode.ParentNode.InsertAfter(wpNode, startWpNode);
 
-                            startNode = wpNode;
+                            startWpNode = wpNode;
                         }
 
                         prevLat = currentLat;
                         prevLon = currentLon;
                     }
                 }
+            }
 
-                Directory.CreateDirectory(Path.GetDirectoryName(dlgOpenFile.FileName) + @"\backup");
-                int index = 0;
-                string backupFile = "";
-                do
-                {
-                    backupFile = Path.GetDirectoryName(dlgOpenFile.FileName) + @"\backup\" + Path.GetFileName(dlgOpenFile.FileName) + "." + index.ToString();
-                    index++;
-                } while (File.Exists(backupFile));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(dlgOpenFile.FileName) + @"\backup");
+            int index = 0;
+            string backupFile = "";
+            do
+            {
+                backupFile = Path.GetDirectoryName(dlgOpenFile.FileName) + @"\backup\" + Path.GetFileName(dlgOpenFile.FileName) + "." + index.ToString();
+                index++;
+            } while (File.Exists(backupFile));
 
                 
-                File.Copy(dlgOpenFile.FileName, backupFile);
-                mGpxDocument.Save(dlgOpenFile.FileName);
-            }
-            else
-            {
-                AddLog("Start node not found !!");
-            }
+            File.Copy(dlgOpenFile.FileName, backupFile);
+            mGpxDocument.Save(dlgOpenFile.FileName);
         }
 
         private void button1_Click(object sender, EventArgs e)
