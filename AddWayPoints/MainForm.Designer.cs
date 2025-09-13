@@ -38,6 +38,7 @@
             this.label2 = new System.Windows.Forms.Label();
             this.edtOffset = new System.Windows.Forms.TextBox();
             this.button1 = new System.Windows.Forms.Button();
+            this.cbxSortTraks = new System.Windows.Forms.CheckBox();
             this.SuspendLayout();
             // 
             // dlgOpenFile
@@ -60,12 +61,12 @@
             this.edtLog.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
             | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
-            this.edtLog.Location = new System.Drawing.Point(12, 71);
+            this.edtLog.Location = new System.Drawing.Point(12, 82);
             this.edtLog.Multiline = true;
             this.edtLog.Name = "edtLog";
             this.edtLog.ReadOnly = true;
             this.edtLog.ScrollBars = System.Windows.Forms.ScrollBars.Both;
-            this.edtLog.Size = new System.Drawing.Size(776, 367);
+            this.edtLog.Size = new System.Drawing.Size(776, 356);
             this.edtLog.TabIndex = 2;
             // 
             // edtDistance
@@ -81,7 +82,7 @@
             this.label1.AutoSize = true;
             this.label1.Location = new System.Drawing.Point(230, 9);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(125, 17);
+            this.label1.Size = new System.Drawing.Size(117, 16);
             this.label1.TabIndex = 4;
             this.label1.Text = "WP Distance (km):";
             // 
@@ -101,7 +102,7 @@
             this.btnRemove.AutoSize = true;
             this.btnRemove.Location = new System.Drawing.Point(361, 29);
             this.btnRemove.Name = "btnRemove";
-            this.btnRemove.Size = new System.Drawing.Size(134, 21);
+            this.btnRemove.Size = new System.Drawing.Size(130, 20);
             this.btnRemove.TabIndex = 6;
             this.btnRemove.Text = "Remove Existing";
             this.btnRemove.UseVisualStyleBackColor = true;
@@ -111,7 +112,7 @@
             this.label2.AutoSize = true;
             this.label2.Location = new System.Drawing.Point(139, 9);
             this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(82, 17);
+            this.label2.Size = new System.Drawing.Size(73, 16);
             this.label2.TabIndex = 8;
             this.label2.Text = "Offset (km):";
             // 
@@ -133,11 +134,22 @@
             this.button1.UseVisualStyleBackColor = true;
             this.button1.Click += new System.EventHandler(this.button1_Click);
             // 
+            // cbxSortTraks
+            // 
+            this.cbxSortTraks.AutoSize = true;
+            this.cbxSortTraks.Location = new System.Drawing.Point(361, 56);
+            this.cbxSortTraks.Name = "cbxSortTraks";
+            this.cbxSortTraks.Size = new System.Drawing.Size(98, 20);
+            this.cbxSortTraks.TabIndex = 10;
+            this.cbxSortTraks.Text = "Sort Tracks";
+            this.cbxSortTraks.UseVisualStyleBackColor = true;
+            // 
             // MainForm
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 16F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(800, 450);
+            this.Controls.Add(this.cbxSortTraks);
             this.Controls.Add(this.button1);
             this.Controls.Add(this.label2);
             this.Controls.Add(this.edtOffset);
@@ -166,6 +178,7 @@
         private System.Windows.Forms.Label label2;
         private System.Windows.Forms.TextBox edtOffset;
         private System.Windows.Forms.Button button1;
+        private System.Windows.Forms.CheckBox cbxSortTraks;
     }
 }
 

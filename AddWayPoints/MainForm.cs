@@ -19,6 +19,19 @@ namespace AddWayPoints
         XmlDocument mGpxDocument;
         XmlNamespaceManager mNsMgr;
         List<RoutePoint> mRoute;
+        const string XMLBEGIN = @"<?xml version='1.0' encoding='UTF-8'?>
+<gpx version=""1.1"" creator=""JOSM GPX export"" xmlns=""http://www.topografix.com/GPX/1/1""
+    xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance""
+    xsi:schemaLocation=""http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd"">
+  <metadata>
+  </metadata>
+  <trk>
+<trkseg>
+";
+
+        const string XMLEND = @"  </trkseg>
+</trk>
+</gpx>";
         public MainForm()
         {
             InitializeComponent();
@@ -38,6 +51,11 @@ namespace AddWayPoints
                     mGpxDocument.Load(dlgOpenFile.FileName);
                     mNsMgr = new XmlNamespaceManager(mGpxDocument.NameTable);
                     mNsMgr.AddNamespace("gpx", "http://www.topografix.com/GPX/1/1");
+
+                    if (cbxSortTraks.Checked)
+                    {
+                        SortTracks();
+                    }
                     double totalDistance = 0;
                     double prevLat = -1;
                     double prevLon = -1;
@@ -271,6 +289,101 @@ namespace AddWayPoints
                     AddLog(string.Format("Exception reading file: {0}", ex.Message));
                 }
             }
+        }
+        void SortTracks()
+        {
+            List<Track> tracks = new List<Track>();
+            foreach (XmlNode trackNode in mGpxDocument.SelectNodes("//gpx:trk", mNsMgr))
+            {
+                Track track = new Track();
+                var nameNode = trackNode.SelectSingleNode("gpx:name", mNsMgr);
+                if (nameNode != null)
+                {
+                    AddLog($"Track: {nameNode.InnerText}");
+                    track.Name = nameNode.InnerText;
+                }
+
+                XmlNodeList segmentNodes = trackNode.SelectNodes("gpx:trkseg", mNsMgr);
+                foreach (XmlNode segmentNode in segmentNodes)
+                {
+                    TrackSement segment = new TrackSement();
+                    foreach (XmlNode pointNode in segmentNode.SelectNodes("gpx:trkpt", mNsMgr))
+                    {
+                        double currentLat = Convert.ToDouble(pointNode.Attributes["lat"].Value);
+                        double currentLon = Convert.ToDouble(pointNode.Attributes["lon"].Value);
+                        segment.Points.Add(new TrackPoint(currentLat, currentLon));
+                    }
+                    track.Segments.Add(segment);
+                }
+                tracks.Add(track);
             }
+
+            if (tracks.Count > 0 && tracks[0].Segments.Count > 0)
+            {
+                TrackSement startSegment = tracks[0].Segments[0];
+                foreach (var track in tracks)
+                {
+                    foreach (var segment in track.Segments)
+                    {
+                        startSegment = FindPrevious(tracks, startSegment, 300);
+                    }
+                }
+                AddLog($"{startSegment.Points[0].Coordinate.ToString()}");
+                string newFile = Path.Combine(Path.GetDirectoryName(dlgOpenFile.FileName), Path.GetFileNameWithoutExtension(dlgOpenFile.FileName) + "-sorted.gpx");
+                using (StreamWriter writer = new StreamWriter(newFile, false))
+                {
+                    TrackSement currentSegment = startSegment;
+                    writer.Write(XMLBEGIN);
+                    WriteSegment(writer, currentSegment);
+                    currentSegment = FindNext(tracks, startSegment, 300);
+                    while (currentSegment != null)
+                    {
+                        WriteSegment(writer, currentSegment);
+                        currentSegment = FindNext(tracks, currentSegment, 300);
+                    }
+
+
+                    writer.Write(XMLEND);
+                }
+            }
+        }
+
+        TrackSement FindPrevious(List<Track> tracks, TrackSement startSegment, double allowedDistanceMeter)
+        {
+            foreach (var track in tracks)
+            {
+                foreach (var segment in track.Segments)
+                {
+                    if (startSegment.Points[0].Coordinate.GetDistanceTo(segment.Points.Last().Coordinate) < allowedDistanceMeter)
+                    {
+                        return segment;
+                    }
+                }
+            }
+            return startSegment;
+        }
+
+        TrackSement FindNext(List<Track> tracks, TrackSement currentSegment, double allowedDistanceMeter)
+        {
+            foreach (var track in tracks)
+            {
+                foreach (var segment in track.Segments)
+                {
+                    if (currentSegment.Points.Last().Coordinate.GetDistanceTo(segment.Points[0].Coordinate) < allowedDistanceMeter)
+                    {
+                        return segment;
+                    }
+                }
+            }
+            return null;
+        }
+        void WriteSegment(StreamWriter writer, TrackSement segment)
+        {
+            foreach(var point in segment.Points)
+            {
+                writer.WriteLine($"     <trkpt lat = \"{point.Coordinate.Latitude}\" lon = \"{point.Coordinate.Longitude}\">");
+                writer.WriteLine($"     </trkpt >");
+            }
+        }
     }
 }
