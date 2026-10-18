@@ -19,19 +19,7 @@ namespace AddWayPoints
         XmlDocument mGpxDocument;
         XmlNamespaceManager mNsMgr;
         List<RoutePoint> mRoute;
-        const string XMLBEGIN = @"<?xml version='1.0' encoding='UTF-8'?>
-<gpx version=""1.1"" creator=""JOSM GPX export"" xmlns=""http://www.topografix.com/GPX/1/1""
-    xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance""
-    xsi:schemaLocation=""http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd"">
-  <metadata>
-  </metadata>
-  <trk>
-<trkseg>
-";
-
-        const string XMLEND = @"  </trkseg>
-</trk>
-</gpx>";
+        const int ALLOWED_TRACK_DISTANCE = 10;
         public MainForm()
         {
             InitializeComponent();
@@ -318,33 +306,70 @@ namespace AddWayPoints
                 tracks.Add(track);
             }
 
-            if (tracks.Count > 0 && tracks[0].Segments.Count > 0)
+            if (tracks.Count > 0)
             {
+                string newFile = Path.Combine(Path.GetDirectoryName(dlgOpenFile.FileName), Path.GetFileNameWithoutExtension(dlgOpenFile.FileName) + "-sorted.gpx");
+
+                mGpxDocument = new XmlDocument();
+
+                // XML declaratie
+                XmlDeclaration decl = mGpxDocument.CreateXmlDeclaration("1.0", "UTF-8", null);
+                mGpxDocument.AppendChild(decl);
+
+                // Root element <gpx> met noodzakelijke attributes (versie, creator, xmlns)
+                XmlElement gpx = mGpxDocument.CreateElement("gpx");
+                gpx.SetAttribute("version", "1.1");
+                gpx.SetAttribute("creator", "AddWayPoints");
+                gpx.SetAttribute("xmlns", "http://www.topografix.com/GPX/1/1");
+
+                gpx.SetAttribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance");
+                gpx.SetAttribute("xsi:schemaLocation",
+                    "http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd");
+
+                mGpxDocument.AppendChild(gpx);
+
+                // Metadata (optioneel)
+                XmlElement metadata = mGpxDocument.CreateElement("metadata");
+                XmlElement time = mGpxDocument.CreateElement("time");
+                time.InnerText = DateTime.UtcNow.ToString("o"); // ISO 8601
+                metadata.AppendChild(time);
+                gpx.AppendChild(metadata);
+
+
+                // Track met 1 segment
+                XmlElement trk = mGpxDocument.CreateElement("trk");
+                XmlElement trkName = mGpxDocument.CreateElement("name");
+                trkName.InnerText = Path.GetFileNameWithoutExtension(dlgOpenFile.FileName);
+                trk.AppendChild(trkName);
+
+                XmlElement trkseg = mGpxDocument.CreateElement("trkseg");
+
                 TrackSement startSegment = tracks[0].Segments[0];
                 foreach (var track in tracks)
                 {
                     foreach (var segment in track.Segments)
                     {
-                        startSegment = FindPrevious(tracks, startSegment, 300);
+                        startSegment = FindPrevious(tracks, startSegment, ALLOWED_TRACK_DISTANCE);
                     }
                 }
+
                 AddLog($"{startSegment.Points[0].Coordinate.ToString()}");
-                string newFile = Path.Combine(Path.GetDirectoryName(dlgOpenFile.FileName), Path.GetFileNameWithoutExtension(dlgOpenFile.FileName) + "-sorted.gpx");
-                using (StreamWriter writer = new StreamWriter(newFile, false))
+                TrackSement currentSegment = startSegment;
+                WriteSegment(mGpxDocument, trkseg, currentSegment);
+                currentSegment = FindNext(tracks, startSegment, ALLOWED_TRACK_DISTANCE);
+                while (currentSegment != null)
                 {
-                    TrackSement currentSegment = startSegment;
-                    writer.Write(XMLBEGIN);
-                    WriteSegment(writer, currentSegment);
-                    currentSegment = FindNext(tracks, startSegment, 300);
-                    while (currentSegment != null)
-                    {
-                        WriteSegment(writer, currentSegment);
-                        currentSegment = FindNext(tracks, currentSegment, 300);
-                    }
-
-
-                    writer.Write(XMLEND);
+                    WriteSegment(mGpxDocument, trkseg, currentSegment);
+                    currentSegment = FindNext(tracks, currentSegment, ALLOWED_TRACK_DISTANCE);
                 }
+
+                trk.AppendChild(trkseg);
+                gpx.AppendChild(trk);
+
+                // Sla bestand op
+                mGpxDocument.Save(newFile);
+
+                AddLog("GPX bestand aangemaakt: " + newFile);
             }
         }
 
@@ -377,12 +402,15 @@ namespace AddWayPoints
             }
             return null;
         }
-        void WriteSegment(StreamWriter writer, TrackSement segment)
+
+        void WriteSegment(XmlDocument doc, XmlElement trkseg, TrackSement segment)
         {
             foreach(var point in segment.Points)
             {
-                writer.WriteLine($"     <trkpt lat = \"{point.Coordinate.Latitude}\" lon = \"{point.Coordinate.Longitude}\">");
-                writer.WriteLine($"     </trkpt >");
+                XmlElement trkpt = doc.CreateElement("trkpt");
+                trkpt.SetAttribute("lat", point.Coordinate.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                trkpt.SetAttribute("lon", point.Coordinate.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                trkseg.AppendChild(trkpt);
             }
         }
     }
