@@ -1,8 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace AddWayPoints
 {
@@ -12,7 +9,13 @@ namespace AddWayPoints
         {
             Segments = new List<TrackSement>();
         }
+
         public string Name { get; set; }
         public List<TrackSement> Segments { get; set; }
+
+        public double Length
+        {
+            get { return Segments.Sum(s => s.Length); }
+        }
     }
 }

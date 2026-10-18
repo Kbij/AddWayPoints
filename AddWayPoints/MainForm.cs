@@ -1,417 +1,589 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Device.Location;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
+using System.Threading;
 using System.Windows.Forms;
-using System.Xml;
 
 namespace AddWayPoints
 {
     public partial class MainForm : Form
     {
-        XmlDocument mGpxDocument;
-        XmlNamespaceManager mNsMgr;
-        List<RoutePoint> mRoute;
-        const int ALLOWED_TRACK_DISTANCE = 10;
+        /// <summary>Segmenten waarvan begin en einde dichter dan dit bij elkaar liggen, sluiten op elkaar aan.</summary>
+        const double ALLOWED_TRACK_DISTANCE = 10;
+
+        GpxRoute mRoute;
+        List<KmMarker> mMarkers = new List<KmMarker>();
+        List<PlaceMark> mPlaces = new List<PlaceMark>();
+        string mLastOutput;
+
+        // Overnachtingsplanning
+        List<Town> mTowns;              // logies langs de route (opgehaald via OpenStreetMap)
+        List<Stage> mStages;            // gekozen etappes, null = geen planning
+        bool mPlanning;
+
         public MainForm()
         {
             InitializeComponent();
+            try
+            {
+                // Zelfde icoon als de .exe (ApplicationIcon in het project)
+                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            }
+            catch (Exception)
+            {
+                // geen icoon is geen ramp
+            }
+            cbxSymbol.SelectedIndex = 0;
+            cbxSource.SelectedIndex = 0;
+            UpdateUiState();
         }
 
-        private void BtnSelect_Click(object sender, EventArgs e)
+        protected override void OnLoad(EventArgs e)
         {
-            mRoute = new List<RoutePoint>();
-            btnWriteWaypoints.Enabled = false;
-            dlgOpenFile.FileName = "*.gpx";
-            if (dlgOpenFile.ShowDialog() == DialogResult.OK)
+            base.OnLoad(e);
+            // Bij Windows-schaal van 125/150% kan het venster hoger worden dan het scherm;
+            // dan vallen de onderste knoppen weg. In dat geval gewoon maximaliseren.
+            Rectangle workingArea = Screen.FromControl(this).WorkingArea;
+            if (Width > workingArea.Width || Height > workingArea.Height)
             {
+                WindowState = FormWindowState.Maximized;
+            }
+        }
+
+        // ------------------------------------------------------------------ Route openen
+
+        private void BtnOpen_Click(object sender, EventArgs e)
+        {
+            dlgOpenFile.Filter = "GPX-bestanden (*.gpx)|*.gpx|Alle bestanden (*.*)|*.*";
+            dlgOpenFile.FileName = "";
+            if (dlgOpenFile.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                AddLog("Bestand geopend: " + dlgOpenFile.FileName);
+                var route = GpxRoute.Load(dlgOpenFile.FileName);
+
+                foreach (var track in route.Tracks)
+                {
+                    AddLog(string.Format("  Track '{0}': {1} segment(en), {2:N1} km",
+                        track.Name ?? "(naamloos)", track.Segments.Count, track.Length / 1000));
+                }
+
+                if (chkSort.Checked)
+                {
+                    var ordered = TrackSorter.Sort(route.Tracks, ALLOWED_TRACK_DISTANCE, AddLog);
+                    string sortedFile = Path.Combine(Path.GetDirectoryName(route.FileName),
+                        Path.GetFileNameWithoutExtension(route.FileName) + "-sorted.gpx");
+                    route = GpxRoute.SaveSorted(route, ordered, sortedFile);
+                    AddLog("Gesorteerd bestand aangemaakt: " + sortedFile + " (verder wordt hiermee gewerkt)");
+                }
+
+                foreach (var gap in route.Gaps)
+                {
+                    AddLog(string.Format("  Let op: sprong van {0:N0} m bij km {1:N1} (rechte lijn meegeteld)",
+                        gap.Value, gap.Key / 1000));
+                }
+
+                if (route.Points.Count < 2)
+                {
+                    AddLog("Geen trackpunten gevonden in dit bestand.");
+                    return;
+                }
+
+                mRoute = route;
+                mPlaces.Clear();
+                mTowns = null;
+                mStages = null;
+                lvStages.Items.Clear();
+                routePreview.SetTowns(null);
+                mLastOutput = null;
+                lnkOutput.Visible = false;
+
+                AddLog(string.Format("Totale afstand: {0:N1} km, {1:N0} punten", route.TotalDistance / 1000, route.Points.Count));
+                AddLog("");
+
+                lblFile.Text = Path.GetFileName(route.FileName);
+                routePreview.SetRoute(route.Points);
+                routePreview.SetPlaces(mPlaces);
+                RegenerateMarkers();
+            }
+            catch (Exception ex)
+            {
+                AddLog("Fout bij het lezen: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Fout bij het lezen", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+                UpdateUiState();
+            }
+        }
+
+        // ------------------------------------------------------------------ Markers
+
+        private void Settings_Changed(object sender, EventArgs e)
+        {
+            RegenerateMarkers();
+        }
+
+        MarkerSettings CurrentSettings()
+        {
+            return new MarkerSettings
+            {
+                IntervalKm = (double)numInterval.Value,
+                OffsetKm = (double)numOffset.Value,
+                DayKm = (double)numDay.Value,
+                NameFormat = txtName.Text
+            };
+        }
+
+        /// <summary>Berekent de markers opnieuw en toont ze meteen in kaart en lijst (nog niets wegschrijven).</summary>
+        void RegenerateMarkers()
+        {
+            if (mRoute == null)
+            {
+                return;
+            }
+
+            var settings = CurrentSettings();
+            if (mStages != null)
+            {
+                settings.DayKm = 0;   // dag-markers komen uit de planning, niet op vaste afstand
+            }
+            mMarkers = MarkerGenerator.Generate(mRoute.Points, settings);
+            if (mStages != null)
+            {
+                mMarkers.AddRange(StageMarkers(settings.OffsetKm));
+                mMarkers.Sort((a, b) => a.RouteDistance.CompareTo(b.RouteDistance));
+            }
+
+            routePreview.KmOffset = settings.OffsetKm;
+            routePreview.SetMarkers(mMarkers);
+
+            lvMarkers.BeginUpdate();
+            lvMarkers.Items.Clear();
+            foreach (var marker in mMarkers)
+            {
+                var item = new ListViewItem(marker.Name);
+                item.SubItems.Add(marker.LabelKm.ToString("N1"));
+                item.SubItems.Add((marker.RouteDistance / 1000).ToString("N1"));
+                item.SubItems.Add(GeoMath.FormatCoordinate(marker.Lat));
+                item.SubItems.Add(GeoMath.FormatCoordinate(marker.Lon));
+                item.Tag = marker;
+                if (marker.Kind == MarkerKind.DayEnd)
+                {
+                    item.ForeColor = System.Drawing.Color.FromArgb(185, 28, 28);
+                    item.Font = new System.Drawing.Font(lvMarkers.Font, System.Drawing.FontStyle.Bold);
+                }
+                lvMarkers.Items.Add(item);
+            }
+            lvMarkers.EndUpdate();
+
+            UpdateStatus();
+        }
+
+        private void LvMarkers_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            routePreview.SelectedMarker = lvMarkers.SelectedItems.Count > 0
+                ? lvMarkers.SelectedItems[0].Tag as KmMarker
+                : null;
+        }
+
+        private void OutputMode_Changed(object sender, EventArgs e)
+        {
+            UpdateUiState();
+        }
+
+        private void BtnWrite_Click(object sender, EventArgs e)
+        {
+            if (mRoute == null)
+            {
+                return;
+            }
+            if (mMarkers.Count == 0)
+            {
+                MessageBox.Show(this, "Er zijn geen markers om te schrijven: de route is korter dan het interval.",
+                    "Geen markers", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                string symbol = cbxSymbol.Text;
+                if (rbSeparate.Checked)
+                {
+                    string file = GpxMarkerWriter.WriteSeparateFile(mRoute, mMarkers, symbol);
+                    AddLog(string.Format("{0} markers geschreven naar {1}", mMarkers.Count, file));
+                    SetOutput(file);
+                }
+                else
+                {
+                    int removed;
+                    string backup = GpxMarkerWriter.WriteIntoRoute(mRoute, mMarkers, symbol, chkRemoveOther.Checked, out removed);
+                    AddLog("Backup: " + backup);
+                    if (removed > 0)
+                    {
+                        AddLog(string.Format("{0} bestaande waypoint(s) verwijderd", removed));
+                    }
+                    AddLog(string.Format("{0} markers toegevoegd aan {1}", mMarkers.Count, mRoute.FileName));
+                    SetOutput(mRoute.FileName);
+                }
+                lblStatus.Text = string.Format("{0} markers geschreven naar {1}", mMarkers.Count, Path.GetFileName(mLastOutput));
+            }
+            catch (Exception ex)
+            {
+                AddLog("Fout bij het schrijven: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Fout bij het schrijven", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        void SetOutput(string file)
+        {
+            mLastOutput = file;
+            lnkOutput.Text = "Toon in Verkenner: " + Path.GetFileName(file);
+            lnkOutput.Visible = true;
+        }
+
+        private void LnkOutput_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(mLastOutput) && File.Exists(mLastOutput))
+            {
+                Process.Start("explorer.exe", "/select,\"" + mLastOutput + "\"");
+            }
+        }
+
+        // ------------------------------------------------------------------ Overnachtingen
+
+        PlanSettings CurrentPlanSettings()
+        {
+            return new PlanSettings
+            {
+                DayKm = (double)numDay.Value,
+                MaxOffRouteKm = (double)numMaxOff.Value,
+                MinLodgings = (int)numMinLodging.Value,
+                MinRestaurants = (int)numMinFood.Value,
+                IncludeCamping = chkCamping.Checked
+            };
+        }
+
+        private void PlanSettings_Changed(object sender, EventArgs e)
+        {
+            // Logies al opgehaald? Dan meteen opnieuw plannen (gaat snel, geen internet nodig).
+            if (mTowns != null && numDay.Value > 0)
+            {
+                RunPlan();
+            }
+            else if (mStages != null)
+            {
+                mStages = null;
+                lvStages.Items.Clear();
+            }
+            RegenerateMarkers();
+        }
+
+        private async void BtnPlan_Click(object sender, EventArgs e)
+        {
+            if (mRoute == null || mPlanning)
+            {
+                return;
+            }
+            if (numDay.Value <= 0)
+            {
+                MessageBox.Show(this, "Vul eerst in hoeveel km je per dag wil fietsen.", "Km per dag",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                numDay.Focus();
+                return;
+            }
+
+            if (mTowns == null)
+            {
+                mPlanning = true;
+                UpdateUiState();
+                var progress = new Progress<string>(text => { lblStatus.Text = text; });
+                var route = mRoute;
                 try
                 {
-                    AddLog(string.Format("File selected: {0}", dlgOpenFile.FileName));
-                    mGpxDocument = new XmlDocument();
-                    mGpxDocument.Load(dlgOpenFile.FileName);
-                    mNsMgr = new XmlNamespaceManager(mGpxDocument.NameTable);
-                    mNsMgr.AddNamespace("gpx", "http://www.topografix.com/GPX/1/1");
-
-                    if (cbxSortTraks.Checked)
+                    List<Town> towns;
+                    if (UseGoogle)
                     {
-                        SortTracks();
+                        string key = ApiKeyStore.Load();
+                        if (string.IsNullOrEmpty(key))
+                        {
+                            key = AskApiKey();
+                            if (string.IsNullOrEmpty(key)) return;
+                        }
+                        AddLog(string.Format("Logies en restaurants opzoeken via Google Places (±{0} zoekopdrachten)…",
+                            GooglePlacesFinder.EstimateRequests(route.Points)));
+                        towns = await GooglePlacesFinder.FindAsync(route.Points, key, progress, CancellationToken.None);
                     }
-                    double totalDistance = 0;
-                    double prevLat = -1;
-                    double prevLon = -1;
-
-                    foreach (XmlNode track in mGpxDocument.SelectNodes("//gpx:trk", mNsMgr))
+                    else
                     {
-                        var nameNode = track.SelectSingleNode("gpx:name", mNsMgr);
-                        if (nameNode != null)
-                        {
-                            AddLog($"Track: {nameNode.InnerText}");
-                        }
-
-                        XmlNodeList segmentNodes = track.SelectNodes("gpx:trkseg", mNsMgr);
-                        double trackDistance = 0;
-
-                        foreach (XmlNode segment in segmentNodes)
-                        {
-                            foreach (XmlNode pt in segment.SelectNodes("gpx:trkpt", mNsMgr))
-                            {
-                                double currentLat = Convert.ToDouble(pt.Attributes["lat"].Value);
-                                double currentLon = Convert.ToDouble(pt.Attributes["lon"].Value);
-
-                                if (prevLat != -1 && prevLon != -1)
-                                {
-                                    var prevCoord = new GeoCoordinate(prevLat, prevLon);
-                                    var currentCoord = new GeoCoordinate(currentLat, currentLon);
-
-                                    trackDistance += currentCoord.GetDistanceTo(prevCoord);
-
-                                    var routePoint = new RoutePoint();
-                                    routePoint.Coordinate = currentCoord;
-                                    routePoint.RouteDistance = (int)Math.Truncate(trackDistance / 1000);
-                                    mRoute.Add(routePoint);
-                                }
-                                prevLat = currentLat;
-                                prevLon = currentLon;
-                            }
-                        }
-
-                        AddLog(string.Format("Distance for current track: {0:N1} km", trackDistance / 1000));
-                        AddLog("===========");
-                        totalDistance += trackDistance;
+                        AddLog("Logies en restaurants langs de route opzoeken via OpenStreetMap (Overpass API)…");
+                        towns = await LodgingFinder.FindAsync(route.Points, progress, CancellationToken.None);
                     }
-
-                    AddLog(string.Format("Total distance: {0:N1} km", totalDistance / 1000));
-                    btnWriteWaypoints.Enabled = true;
+                    if (route != mRoute)
+                    {
+                        return;   // intussen een andere route geopend
+                    }
+                    mTowns = towns;
+                    int withLodging = towns.Count(t => t.Count(true) > 0);
+                    int withFood = towns.Count(t => t.Restaurant > 0);
+                    AddLog(string.Format("{0} plaatsen langs de route gevonden, {1} met logies, {2} met een restaurant.", towns.Count, withLodging, withFood));
                 }
                 catch (Exception ex)
                 {
-                    AddLog(string.Format("Exception reading file: {0}", ex.Message));
+                    AddLog("Fout bij het opzoeken van logies: " + ex.Message);
+                    if (UseGoogle)
+                    {
+                        AddLog("  (" + ex.GetType().Name + ") Laatste antwoord van Google: " + GooglePlacesFinder.DebugFile);
+                    }
+                    string hint = UseGoogle
+                        ? "\n\nControleer je API-sleutel (knop 'Sleutel…') en of 'Places API (New)' aan staat."
+                        : "\n\nProbeer het later opnieuw, of kies Google Places als bron.";
+                    MessageBox.Show(this, "Logies opzoeken lukte niet:\n" + ex.Message + hint,
+                        "Overnachtingen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                finally
+                {
+                    mPlanning = false;
+                    UpdateUiState();
+                }
+            }
+
+            RunPlan();
+            RegenerateMarkers();
+            tabs.SelectedTab = tabStages;
+        }
+
+        bool UseGoogle
+        {
+            get { return cbxSource.SelectedIndex == 1; }
+        }
+
+        private void CbxSource_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            // Andere bron = opnieuw opzoeken
+            mTowns = null;
+            if (mStages != null)
+            {
+                mStages = null;
+                lvStages.Items.Clear();
+                routePreview.SetTowns(null);
+                RegenerateMarkers();
+            }
+            if (UseGoogle && string.IsNullOrEmpty(ApiKeyStore.Load()))
+            {
+                AskApiKey();
+            }
+            UpdateUiState();
+        }
+
+        private void BtnApiKey_Click(object sender, EventArgs e)
+        {
+            AskApiKey();
+        }
+
+        string AskApiKey()
+        {
+            using (var dialog = new ApiKeyDialog(ApiKeyStore.Load()))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return null;
+                }
+                try
+                {
+                    ApiKeyStore.Save(dialog.ApiKey);
+                    AddLog(string.IsNullOrEmpty(dialog.ApiKey) ? "Google API-sleutel verwijderd." : "Google API-sleutel opgeslagen.");
+                    if (UseGoogle) mTowns = null;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "Sleutel opslaan lukte niet: " + ex.Message, "API-sleutel",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                return dialog.ApiKey;
+            }
+        }
+
+        void RunPlan()
+        {
+            var settings = CurrentPlanSettings();
+            var candidates = StagePlanner.Candidates(mTowns, mRoute.TotalDistance, settings);
+            mStages = StagePlanner.Plan(mTowns, mRoute.TotalDistance, settings);
+            routePreview.SetTowns(candidates);
+
+            double offsetKm = (double)numOffset.Value;
+            lvStages.BeginUpdate();
+            lvStages.Items.Clear();
+            var warnings = new List<string>();
+            for (int i = 0; i < mStages.Count; i++)
+            {
+                var stage = mStages[i];
+                bool last = i == mStages.Count - 1;
+                var item = new ListViewItem(stage.Day.ToString());
+                item.SubItems.Add(last ? "Finish" : stage.Name);
+                item.SubItems.Add((stage.Length / 1000).ToString("N1") + " km");
+                item.SubItems.Add((offsetKm + stage.EndDistance / 1000).ToString("N1"));
+                item.SubItems.Add(stage.Town != null ? stage.Town.Count(settings.IncludeCamping) + "  (" + stage.Town.Summary(settings.IncludeCamping) + ")" : "");
+                item.SubItems.Add(stage.Town != null ? stage.Town.FoodSummary : "");
+                item.SubItems.Add(stage.Town != null ? (stage.Town.OffRoute / 1000).ToString("N1") + " km" : "");
+                item.Tag = stage;
+                if (StagePlanner.IsOutsideTolerance(stage, settings.DayKm, last))
+                {
+                    item.ForeColor = Color.FromArgb(185, 28, 28);
+                    warnings.Add(string.Format("  Dag {0}: {1:N0} km", stage.Day, stage.Length / 1000));
+                }
+                lvStages.Items.Add(item);
+            }
+            lvStages.EndUpdate();
+
+            AddLog(string.Format("Planning: {0} dagen rond {1:N0} km/dag, {2} geschikte plaatsen (min. {3} logies, min. {4} restaurant(s), max. {5:N1} km van de route).",
+                mStages.Count, settings.DayKm, candidates.Count, settings.MinLodgings, settings.MinRestaurants, settings.MaxOffRouteKm));
+            if (warnings.Count > 0)
+            {
+                AddLog("Geen geschikte plaats binnen ±" + (StagePlanner.Tolerance * 100).ToString("0") + "% voor:");
+                warnings.ForEach(AddLog);
+                AddLog("  Tip: verhoog 'Max. km van route', verlaag 'Min. aantal logies' / 'Min. restaurants' of vink campings aan.");
+            }
+        }
+
+        IEnumerable<KmMarker> StageMarkers(double offsetKm)
+        {
+            bool camping = chkCamping.Checked;
+            foreach (var stage in mStages)
+            {
+                if (stage.Town == null) continue;   // finish
+                var town = stage.Town;
+                yield return new KmMarker
+                {
+                    Kind = MarkerKind.DayEnd,
+                    Day = stage.Day,
+                    Lat = town.Lat,
+                    Lon = town.Lon,
+                    RouteDistance = stage.EndDistance,
+                    LabelKm = offsetKm + stage.EndDistance / 1000,
+                    Name = string.Format("Dag {0}: {1}", stage.Day, town.Name),
+                    Description = string.Format("Overnachting dag {0}: {1}. Dagafstand {2:N0} km (km {3:N0}). Logies: {4}. Eten: {5}. {6:N1} km van de route.",
+                        stage.Day, town.Name, stage.Length / 1000, offsetKm + stage.EndDistance / 1000,
+                        town.Summary(camping), town.FoodSummary, town.OffRoute / 1000)
+                };
+            }
+        }
+
+        private void LvStages_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (lvStages.SelectedItems.Count == 0) return;
+            var stage = lvStages.SelectedItems[0].Tag as Stage;
+            routePreview.SelectedMarker = mMarkers.FirstOrDefault(m => m.Kind == MarkerKind.DayEnd && stage != null && m.Day == stage.Day);
+        }
+
+        // ------------------------------------------------------------------ KML
+
+        private void BtnKml_Click(object sender, EventArgs e)
+        {
+            if (mRoute == null)
+            {
+                return;
+            }
+
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Filter = "KML-bestanden (*.kml)|*.kml|Alle bestanden (*.*)|*.*";
+                dialog.InitialDirectory = Path.GetDirectoryName(mRoute.FileName);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
                 }
 
+                try
+                {
+                    AddLog("KML geopend: " + dialog.FileName);
+                    mPlaces = KmlImporter.Load(dialog.FileName);
+                    KmlImporter.LocateOnRoute(mPlaces, mRoute.Points);
+                    double offsetKm = (double)numOffset.Value;
+
+                    AddLog(string.Format("{0} plaatsen gevonden, gesorteerd volgens de route:", mPlaces.Count));
+                    AddLog(string.Format("  {0,-32} {1,9} {2,9} {3,12}", "Plaats", "Km-stand", "Etappe", "Naast route"));
+                    double previous = 0;
+                    foreach (var place in mPlaces)
+                    {
+                        AddLog(string.Format("  {0,-32} {1,9:N1} {2,9:N1} {3,10:N0} m",
+                            Truncate(place.Name, 32),
+                            offsetKm + place.RouteDistance / 1000,
+                            (place.RouteDistance - previous) / 1000,
+                            place.OffRouteDistance));
+                        previous = place.RouteDistance;
+                    }
+                    if (mPlaces.Count > 0)
+                    {
+                        AddLog(string.Format("  {0,-32} {1,9:N1} {2,9:N1}", "Finish",
+                            offsetKm + mRoute.TotalDistance / 1000, (mRoute.TotalDistance - previous) / 1000));
+                    }
+                    AddLog("");
+
+                    routePreview.SetPlaces(mPlaces);
+                    tabs.SelectedTab = tabLog;
+                }
+                catch (Exception ex)
+                {
+                    AddLog("Fout bij het lezen van de KML: " + ex.Message);
+                    MessageBox.Show(this, ex.Message, "Fout bij het lezen", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
+        }
+
+        static string Truncate(string text, int length)
+        {
+            return text.Length <= length ? text : text.Substring(0, length - 1) + "…";
+        }
+
+        // ------------------------------------------------------------------ Hulpfuncties
+
+        void UpdateUiState()
+        {
+            bool loaded = mRoute != null;
+            btnWrite.Enabled = loaded;
+            // Platte knop: zelf de kleuren zetten, anders is de uitgeschakelde tekst onleesbaar
+            btnWrite.BackColor = loaded ? Color.FromArgb(37, 99, 235) : Color.FromArgb(203, 213, 225);
+            btnWrite.ForeColor = loaded ? Color.White : Color.FromArgb(100, 116, 139);
+            btnKml.Enabled = loaded;
+            btnPlan.Enabled = loaded && !mPlanning;
+            btnApiKey.Visible = UseGoogle;
+            btnPlan.Text = mPlanning ? "Logies opzoeken…" : "Overnachtingsplaatsen plannen";
+            chkRemoveOther.Enabled = rbSameFile.Checked;
+            lblSeparateHint.Text = loaded
+                ? "→ " + Path.GetFileName(GpxMarkerWriter.SeparateFileName(mRoute.FileName))
+                : "→ <naam>-km.gpx naast de route";
+            UpdateStatus();
+        }
+
+        void UpdateStatus()
+        {
+            if (mRoute == null)
+            {
+                lblStatus.Text = "Open een GPX-bestand om te beginnen";
+                return;
+            }
+            int days = mMarkers.Count(m => m.Kind == MarkerKind.DayEnd);
+            lblStatus.Text = string.Format("{0:N1} km  ·  {1:N0} trackpunten  ·  {2} markers{3}",
+                mRoute.TotalDistance / 1000,
+                mRoute.Points.Count,
+                mMarkers.Count(m => m.Kind == MarkerKind.Interval),
+                days > 0 ? string.Format("  ·  {0} dagen", days + 1) : "");
         }
 
         private void AddLog(string log)
         {
-            edtLog.AppendText($"{log}\r\n");
-        }
-
-        private void BtnWriteWaypoints_Click(object sender, EventArgs e)
-        {
-            XmlNodeList wpNodes = mGpxDocument.SelectNodes("//gpx:wpt", mNsMgr);
-
-            if (btnRemove.Checked)
-            {
-                foreach (XmlNode wp in wpNodes)
-                {
-                    wp.RemoveAll();
-                    wp.ParentNode.RemoveChild(wp);
-                }
-            }
-            double offSet = Convert.ToDouble(edtOffset.Text);
-            double wantedWpdistance = Convert.ToDouble(edtDistance.Text);
-            int wpIndex = (int)Math.Truncate(offSet / wantedWpdistance);
-            double prevLat = -1;
-            double prevLon = -1;
-            double totalDistance = 0;
-
-            XmlNode startWpNode = mGpxDocument.SelectSingleNode("//gpx:metadata", mNsMgr);
-            if (startWpNode == null)
-            {
-                startWpNode = mGpxDocument.SelectSingleNode("//gpx:gpx", mNsMgr);
-            }
-
-            foreach (XmlNode track in mGpxDocument.SelectNodes("//gpx:trk", mNsMgr))
-            {
-                XmlNodeList segmentNodes = track.SelectNodes("gpx:trkseg", mNsMgr);
-                foreach (XmlNode segment in segmentNodes)
-                {
-                    foreach (XmlNode pt in segment.SelectNodes("gpx:trkpt", mNsMgr))
-                    {
-                        double currentLat = Convert.ToDouble(pt.Attributes["lat"].Value);
-                        double currentLon = Convert.ToDouble(pt.Attributes["lon"].Value);
-
-                        if (prevLat != -1 && prevLon != -1)
-                        {
-                            var prevCoord = new GeoCoordinate(prevLat, prevLon);
-                            var currentCoord = new GeoCoordinate(currentLat, currentLon);
-
-                            totalDistance += currentCoord.GetDistanceTo(prevCoord);
-
-                            var routePoint = new RoutePoint();
-                            routePoint.Coordinate = currentCoord;
-                            routePoint.RouteDistance = (int)Math.Truncate(totalDistance / 1000);
-                            mRoute.Add(routePoint);
-                        }
-
-                        int currentIndex = (int)Math.Truncate((offSet + (totalDistance / 1000)) / wantedWpdistance);
-                        if (currentIndex > wpIndex)
-                        {
-                            wpIndex = currentIndex;
-                            XmlNode wpNode = mGpxDocument.CreateElement("wpt", "http://www.topografix.com/GPX/1/1");
-                            XmlAttribute latAttr = mGpxDocument.CreateAttribute("lat");
-                            latAttr.Value = currentLat.ToString();
-                            wpNode.Attributes.Append(latAttr);
-
-                            XmlAttribute lonAttr = mGpxDocument.CreateAttribute("lon");
-                            lonAttr.Value = currentLon.ToString();
-                            wpNode.Attributes.Append(lonAttr);
-
-                            XmlNode nameNode = mGpxDocument.CreateElement("name", "http://www.topografix.com/GPX/1/1");
-                            nameNode.InnerText = string.Format("{0}", wpIndex * wantedWpdistance);
-                            wpNode.AppendChild(nameNode);
-
-                            startWpNode.ParentNode.InsertAfter(wpNode, startWpNode);
-
-                            startWpNode = wpNode;
-                        }
-
-                        prevLat = currentLat;
-                        prevLon = currentLon;
-                    }
-                }
-            }
-
-
-            Directory.CreateDirectory(Path.GetDirectoryName(dlgOpenFile.FileName) + @"\backup");
-            int index = 0;
-            string backupFile = "";
-            do
-            {
-                backupFile = Path.GetDirectoryName(dlgOpenFile.FileName) + @"\backup\" + Path.GetFileName(dlgOpenFile.FileName) + "." + index.ToString();
-                index++;
-            } while (File.Exists(backupFile));
-
-                
-            File.Copy(dlgOpenFile.FileName, backupFile);
-            mGpxDocument.Save(dlgOpenFile.FileName);
-        }
-
-        private void button1_Click(object sender, EventArgs e)
-        {
-            List<PlaceMark> placeMarkList = new List<PlaceMark>();
-            dlgOpenFile.FileName = "*.kml";
-            if (dlgOpenFile.ShowDialog() == DialogResult.OK)
-            {
-                try
-                {
-                    AddLog(string.Format("File selected: {0}", dlgOpenFile.FileName));
-                    mGpxDocument = new XmlDocument();
-                    mGpxDocument.Load(dlgOpenFile.FileName);
-                    mNsMgr = new XmlNamespaceManager(mGpxDocument.NameTable);
-                    mNsMgr.AddNamespace("kml", "http://www.opengis.net/kml/2.2");
-                    XmlNodeList placeMarks = mGpxDocument.SelectNodes("//kml:Placemark", mNsMgr);
-                    AddLog($"Placemarks found: {placeMarks.Count}");
-                    foreach (XmlElement placeMark in placeMarks)
-                    {
-                        string name = "";
-                        string coordinates = "";
-                        foreach (XmlElement sub in placeMark.ChildNodes)
-                        {
-                            if (sub.Name == "name")
-                            {
-                                name = sub.InnerText;
-                            }
-                            if (sub.Name == "Point")
-                            {
-                                foreach (XmlElement subsub in sub.ChildNodes)
-                                {
-                                    if (subsub.Name == "coordinates")
-                                    {
-                                        coordinates = subsub.InnerText;
-                                        coordinates = Regex.Replace(coordinates, @"\t|\n|\r", "").Trim();
-                                    }
-                                }
-                            }
-                        }
-                        //var name = placeMark.. Item("name").InnerText;
-                        AddLog($"place: {name}, coodinates:{coordinates}");
-                        string[] parts = coordinates.Split(',');
-                        double placeLong = Convert.ToDouble(parts[0]);
-                        double placeLat = Convert.ToDouble(parts[1]);
-
-                        PlaceMark kmlPlaceMark = new PlaceMark();
-                        kmlPlaceMark.Coordinate = new GeoCoordinate(placeLat, placeLong);
-                        kmlPlaceMark.Name = name;
-                        placeMarkList.Add(kmlPlaceMark);
-                    }
-
-                    foreach (var placeMark in placeMarkList)
-                    {
-                        foreach (var routePoint in mRoute)
-                        {
-                            if (placeMark.ClosestRoutePoint == null)
-                            {
-                                placeMark.ClosestRoutePoint = routePoint;
-                            }
-                            else
-                            {
-                                double previousDistance = Math.Abs(placeMark.Coordinate.GetDistanceTo(placeMark.ClosestRoutePoint.Coordinate));
-                                double currentDistance = Math.Abs(placeMark.Coordinate.GetDistanceTo(routePoint.Coordinate));
-                                
-                                if (currentDistance < previousDistance)
-                                {
-                                    placeMark.ClosestRoutePoint.Coordinate = routePoint.Coordinate;
-                                    placeMark.TotalRouteDistance = routePoint.RouteDistance;
-                                }
-                            }
-                        }
-                    }
-                    double previousRouteDistance = 0;
-                    foreach (var placeMark in placeMarkList)
-                    {
-                        AddLog($"{placeMark.Name}: {placeMark.TotalRouteDistance - previousRouteDistance}");
-                        previousRouteDistance = placeMark.TotalRouteDistance;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AddLog(string.Format("Exception reading file: {0}", ex.Message));
-                }
-            }
-        }
-        void SortTracks()
-        {
-            List<Track> tracks = new List<Track>();
-            foreach (XmlNode trackNode in mGpxDocument.SelectNodes("//gpx:trk", mNsMgr))
-            {
-                Track track = new Track();
-                var nameNode = trackNode.SelectSingleNode("gpx:name", mNsMgr);
-                if (nameNode != null)
-                {
-                    AddLog($"Track: {nameNode.InnerText}");
-                    track.Name = nameNode.InnerText;
-                }
-
-                XmlNodeList segmentNodes = trackNode.SelectNodes("gpx:trkseg", mNsMgr);
-                foreach (XmlNode segmentNode in segmentNodes)
-                {
-                    TrackSement segment = new TrackSement();
-                    foreach (XmlNode pointNode in segmentNode.SelectNodes("gpx:trkpt", mNsMgr))
-                    {
-                        double currentLat = Convert.ToDouble(pointNode.Attributes["lat"].Value);
-                        double currentLon = Convert.ToDouble(pointNode.Attributes["lon"].Value);
-                        segment.Points.Add(new TrackPoint(currentLat, currentLon));
-                    }
-                    track.Segments.Add(segment);
-                }
-                tracks.Add(track);
-            }
-
-            if (tracks.Count > 0)
-            {
-                string newFile = Path.Combine(Path.GetDirectoryName(dlgOpenFile.FileName), Path.GetFileNameWithoutExtension(dlgOpenFile.FileName) + "-sorted.gpx");
-
-                mGpxDocument = new XmlDocument();
-
-                // XML declaratie
-                XmlDeclaration decl = mGpxDocument.CreateXmlDeclaration("1.0", "UTF-8", null);
-                mGpxDocument.AppendChild(decl);
-
-                // Root element <gpx> met noodzakelijke attributes (versie, creator, xmlns)
-                XmlElement gpx = mGpxDocument.CreateElement("gpx");
-                gpx.SetAttribute("version", "1.1");
-                gpx.SetAttribute("creator", "AddWayPoints");
-                gpx.SetAttribute("xmlns", "http://www.topografix.com/GPX/1/1");
-
-                gpx.SetAttribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance");
-                gpx.SetAttribute("xsi:schemaLocation",
-                    "http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd");
-
-                mGpxDocument.AppendChild(gpx);
-
-                // Metadata (optioneel)
-                XmlElement metadata = mGpxDocument.CreateElement("metadata");
-                XmlElement time = mGpxDocument.CreateElement("time");
-                time.InnerText = DateTime.UtcNow.ToString("o"); // ISO 8601
-                metadata.AppendChild(time);
-                gpx.AppendChild(metadata);
-
-
-                // Track met 1 segment
-                XmlElement trk = mGpxDocument.CreateElement("trk");
-                XmlElement trkName = mGpxDocument.CreateElement("name");
-                trkName.InnerText = Path.GetFileNameWithoutExtension(dlgOpenFile.FileName);
-                trk.AppendChild(trkName);
-
-                XmlElement trkseg = mGpxDocument.CreateElement("trkseg");
-
-                TrackSement startSegment = tracks[0].Segments[0];
-                foreach (var track in tracks)
-                {
-                    foreach (var segment in track.Segments)
-                    {
-                        startSegment = FindPrevious(tracks, startSegment, ALLOWED_TRACK_DISTANCE);
-                    }
-                }
-
-                AddLog($"{startSegment.Points[0].Coordinate.ToString()}");
-                TrackSement currentSegment = startSegment;
-                WriteSegment(mGpxDocument, trkseg, currentSegment);
-                currentSegment = FindNext(tracks, startSegment, ALLOWED_TRACK_DISTANCE);
-                while (currentSegment != null)
-                {
-                    WriteSegment(mGpxDocument, trkseg, currentSegment);
-                    currentSegment = FindNext(tracks, currentSegment, ALLOWED_TRACK_DISTANCE);
-                }
-
-                trk.AppendChild(trkseg);
-                gpx.AppendChild(trk);
-
-                // Sla bestand op
-                mGpxDocument.Save(newFile);
-
-                AddLog("GPX bestand aangemaakt: " + newFile);
-            }
-        }
-
-        TrackSement FindPrevious(List<Track> tracks, TrackSement startSegment, double allowedDistanceMeter)
-        {
-            foreach (var track in tracks)
-            {
-                foreach (var segment in track.Segments)
-                {
-                    if (startSegment.Points[0].Coordinate.GetDistanceTo(segment.Points.Last().Coordinate) < allowedDistanceMeter)
-                    {
-                        return segment;
-                    }
-                }
-            }
-            return startSegment;
-        }
-
-        TrackSement FindNext(List<Track> tracks, TrackSement currentSegment, double allowedDistanceMeter)
-        {
-            foreach (var track in tracks)
-            {
-                foreach (var segment in track.Segments)
-                {
-                    if (currentSegment.Points.Last().Coordinate.GetDistanceTo(segment.Points[0].Coordinate) < allowedDistanceMeter)
-                    {
-                        return segment;
-                    }
-                }
-            }
-            return null;
-        }
-
-        void WriteSegment(XmlDocument doc, XmlElement trkseg, TrackSement segment)
-        {
-            foreach(var point in segment.Points)
-            {
-                XmlElement trkpt = doc.CreateElement("trkpt");
-                trkpt.SetAttribute("lat", point.Coordinate.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                trkpt.SetAttribute("lon", point.Coordinate.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                trkseg.AppendChild(trkpt);
-            }
+            edtLog.AppendText(log + Environment.NewLine);
         }
     }
 }

@@ -1,18 +1,21 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Device.Location;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Xml;
 
 namespace AddWayPoints
 {
+    /// <summary>Een punt uit een GPX-tracksegment.</summary>
     internal class TrackPoint
     {
-        public TrackPoint(double lat, double lon)
+        public TrackPoint(double lat, double lon, XmlNode source = null)
         {
-            Coordinate = new GeoCoordinate(lat, lon);
+            Lat = lat;
+            Lon = lon;
+            Source = source;
         }
-        public GeoCoordinate Coordinate { get; set; }
+
+        public double Lat { get; private set; }
+        public double Lon { get; private set; }
+
+        /// <summary>Originele XML-node (zodat hoogte, tijd, ... behouden blijven bij sorteren).</summary>
+        public XmlNode Source { get; private set; }
     }
 }

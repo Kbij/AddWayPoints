@@ -44,6 +44,8 @@
     <Reference Include="System.Drawing" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
@@ -53,13 +55,30 @@
     <Compile Include="MainForm.Designer.cs">
       <DependentUpon>MainForm.cs</DependentUpon>
     </Compile>
+    <Compile Include="ApiKeyDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="GeoMath.cs" />
+    <Compile Include="GooglePlacesFinder.cs" />
+    <Compile Include="GpxMarkerWriter.cs" />
+    <Compile Include="GpxRoute.cs" />
+    <Compile Include="KmlImporter.cs" />
+    <Compile Include="KmMarker.cs" />
+    <Compile Include="Lodging.cs" />
+    <Compile Include="MarkerGenerator.cs" />
     <Compile Include="PlaceMark.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="RoutePoint.cs" />
+    <Compile Include="RoutePreview.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Track.cs" />
     <Compile Include="TrackPoint.cs" />
     <Compile Include="TrackSement.cs" />
+    <Compile Include="StagePlanner.cs" />
+    <Compile Include="TileCache.cs" />
+    <Compile Include="TrackSorter.cs" />
     <EmbeddedResource Include="MainForm.resx">
       <DependentUpon>MainForm.cs</DependentUpon>
     </EmbeddedResource>
@@ -82,8 +101,12 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
   </ItemGroup>
+  <PropertyGroup>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
   <ItemGroup>
     <None Include="App.config" />
+    <Content Include="app.ico" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
